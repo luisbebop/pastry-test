@@ -1,7 +1,8 @@
 package main
 
 import "fmt"
-import "os"
+import "time"
+import "flag"
 import "secondbit.org/pastry"
 
 type PastryApplication struct {
@@ -16,7 +17,7 @@ func (app *PastryApplication) OnDeliver(msg pastry.Message) {
 }
 
 func (app *PastryApplication) OnForward(msg *pastry.Message, next pastry.NodeID) bool {
-    fmt.Printf("Forwarding message %s to Node %s.", msg.Key, next)
+    fmt.Printf("Forwarding message %s to Node %s.\n", msg.Key, next)
     return true // return false if you don't want the message forwarded
 }
 
@@ -36,24 +37,33 @@ func (app *PastryApplication) OnHeartbeat(node pastry.Node) {
     fmt.Println("Received heartbeat from ", node.ID)
 }
 
-func main() {
-	hostname, err := os.Hostname()
+func main() {	
+	//parsing parameters
+	localIpPtr := flag.String("localip", "", "Your local ip")
+	globalIpPtr := flag.String("globalip", "", "Your global ip")
+	regionPtr := flag.String("region", "", "Your amazon region")
+	nodeIpPtr := flag.String("nodeip", "", "A node ip to connect")
+	nodeIdPtr := flag.String("nodeid", "", "At least 16 bytes to generate your node ID")
+	msgIdPtr := flag.String("msgid", "", "At least 16 bytes do generate a message ID")
+	msgCountPtr := flag.Int("msgcount", 1, "Number of messages to send")
+	flag.Parse()
+		
+	//generating node id. We need at least 16 bytes
+	id, err := pastry.NodeIDFromBytes([]byte(*nodeIdPtr))
 	if err != nil {
 		panic(err.Error())
 	}
 	
-	id, err := pastry.NodeIDFromBytes([]byte(hostname))
-	if err != nil {
-		panic(err.Error())
-	}
-	
-	node := pastry.NewNode(id, os.Args[1], os.Args[2], os.Args[3], 5332)
+	//creating a new node and initializing a cluster
+	node := pastry.NewNode(id, *localIpPtr, *globalIpPtr, *regionPtr, 5332)
 	credentials := pastry.Passphrase("I S2 Gophers.")
 	cluster := pastry.NewCluster(node,credentials)
 	
+	//registering an application and callbacks
 	app := &PastryApplication{}
 	cluster.RegisterCallback(app)
 	
+	//starting the cluster
 	go func() {
 		defer cluster.Stop()
 		err := cluster.Listen()
@@ -62,14 +72,38 @@ func main() {
 		}
 	}()
 	
-	fmt.Println("Pastry running")
-	fmt.Println("hostname: ", hostname)
-	fmt.Println("id: ", id)
+	fmt.Println("Pastry running node id:", id)
 	
-	arg := os.Args[4]
-	if arg != "" {
-		fmt.Println("Joining node: ", arg)
-		cluster.Join(arg, 5332)
+	//connecting to another node in the cluster
+	go func () {
+		if *nodeIpPtr != "" {
+			fmt.Println("Joining node: ", *nodeIpPtr)
+			cluster.Join(*nodeIpPtr, 5332)
+		}
+	}()
+	
+	//sending msgs to the cluster
+	if *msgIdPtr != "" {
+		go func() {
+			time.Sleep (time.Second * 2)
+			fmt.Println("sending message loop")
+		
+			idMsg, err := pastry.NodeIDFromBytes([]byte(*msgIdPtr))
+			if err != nil {
+				panic(err.Error())
+			}
+			purpose := byte(16)
+			for i:= 0; i < *msgCountPtr; i++ {
+				fmt.Println("sending message:", i+1)
+				msg := cluster.NewMessage(purpose, idMsg, []byte("This is the body of the message."))
+				err = cluster.Send(msg)
+				if err != nil {
+					panic(err.Error())
+				}
+				time.Sleep(time.Second * 1)
+			}
+		}()
 	}
+	
 	select {}
 }
